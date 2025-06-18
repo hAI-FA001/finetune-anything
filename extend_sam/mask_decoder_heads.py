@@ -6,17 +6,18 @@ from typing import List, Tuple, Type
 
 from .segment_anything_ori.modeling.common import LayerNorm2d
 
+from torch.quantization import QuantStub, DeQuantStub
+
 
 class OriHead(nn.Module):
-
     def __init__(
-            self,
-            *,
-            transformer_dim: int,
-            num_multimask_outputs: int = 3,
-            activation: Type[nn.Module] = nn.GELU,
-            iou_head_depth: int = 3,
-            iou_head_hidden_dim: int = 256,
+        self,
+        *,
+        transformer_dim: int,
+        num_multimask_outputs: int = 3,
+        activation: Type[nn.Module] = nn.GELU,
+        iou_head_depth: int = 3,
+        iou_head_hidden_dim: int = 256,
     ) -> None:
         """
         Predicts masks given an image and prompt embeddings, using a
@@ -41,10 +42,14 @@ class OriHead(nn.Module):
         self.num_mask_tokens = num_multimask_outputs + 1
 
         self.output_upscaling = nn.Sequential(
-            nn.ConvTranspose2d(transformer_dim, transformer_dim // 4, kernel_size=2, stride=2),
+            nn.ConvTranspose2d(
+                transformer_dim, transformer_dim // 4, kernel_size=2, stride=2
+            ),
             LayerNorm2d(transformer_dim // 4),
             activation(),
-            nn.ConvTranspose2d(transformer_dim // 4, transformer_dim // 8, kernel_size=2, stride=2),
+            nn.ConvTranspose2d(
+                transformer_dim // 4, transformer_dim // 8, kernel_size=2, stride=2
+            ),
             activation(),
         )
         self.output_hypernetworks_mlps = nn.ModuleList(
@@ -58,12 +63,16 @@ class OriHead(nn.Module):
             transformer_dim, iou_head_hidden_dim, self.num_mask_tokens, iou_head_depth
         )
 
+        self.quant = QuantStub()
+        self.dequant = DeQuantStub()
+        self.output_upscaling.qconfig = None
+
     def forward(
-            self,
-            src: torch.Tensor,
-            iou_token_out: torch.Tensor,
-            mask_tokens_out: torch.Tensor,
-            multimask_output: bool,
+        self,
+        src: torch.Tensor,
+        iou_token_out: torch.Tensor,
+        mask_tokens_out: torch.Tensor,
+        multimask_output: bool,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """
         Predict masks given image and prompt embeddings.
@@ -84,10 +93,16 @@ class OriHead(nn.Module):
 
         # Upscale mask embeddings and predict masks using the mask tokens
         src = src.transpose(1, 2).view(b, c, h, w)
+
+        self.dequant(src)
         upscaled_embedding = self.output_upscaling(src)
+        self.quant(src)
+
         hyper_in_list: List[torch.Tensor] = []
         for i in range(self.num_mask_tokens):
-            hyper_in_list.append(self.output_hypernetworks_mlps[i](mask_tokens_out[:, i, :]))
+            hyper_in_list.append(
+                self.output_hypernetworks_mlps[i](mask_tokens_out[:, i, :])
+            )
         hyper_in = torch.stack(hyper_in_list, dim=1)
         b, c, h, w = upscaled_embedding.shape
         masks = (hyper_in @ upscaled_embedding.view(b, c, h * w)).view(b, -1, h, w)
@@ -108,16 +123,15 @@ class OriHead(nn.Module):
 
 
 class SemSegHead(nn.Module):
-
     def __init__(
-            self,
-            *,
-            transformer_dim: int,
-            num_multimask_outputs: int = 3,
-            activation: Type[nn.Module] = nn.GELU,
-            iou_head_depth: int = 3,
-            iou_head_hidden_dim: int = 256,
-            class_num: int = 20,
+        self,
+        *,
+        transformer_dim: int,
+        num_multimask_outputs: int = 3,
+        activation: Type[nn.Module] = nn.GELU,
+        iou_head_depth: int = 3,
+        iou_head_hidden_dim: int = 256,
+        class_num: int = 20,
     ) -> None:
         """
         Predicts masks given an image and prompt embeddings, using a
@@ -141,10 +155,14 @@ class SemSegHead(nn.Module):
         self.class_num = class_num
 
         self.output_upscaling = nn.Sequential(
-            nn.ConvTranspose2d(transformer_dim, transformer_dim // 4, kernel_size=2, stride=2),
+            nn.ConvTranspose2d(
+                transformer_dim, transformer_dim // 4, kernel_size=2, stride=2
+            ),
             LayerNorm2d(transformer_dim // 4),
             activation(),
-            nn.ConvTranspose2d(transformer_dim // 4, transformer_dim // 8, kernel_size=2, stride=2),
+            nn.ConvTranspose2d(
+                transformer_dim // 4, transformer_dim // 8, kernel_size=2, stride=2
+            ),
             activation(),
         )
 
@@ -159,13 +177,17 @@ class SemSegHead(nn.Module):
             transformer_dim, iou_head_hidden_dim, self.num_mask_tokens, iou_head_depth
         )
 
+        self.quant = QuantStub()
+        self.dequant = DeQuantStub()
+        self.output_upscaling.qconfig = None
+
     def forward(
-            self,
-            src: torch.Tensor,
-            iou_token_out: torch.Tensor,
-            mask_tokens_out: torch.Tensor,
-            src_shape,
-            mask_scale=1,
+        self,
+        src: torch.Tensor,
+        iou_token_out: torch.Tensor,
+        mask_tokens_out: torch.Tensor,
+        src_shape,
+        mask_scale=1,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """
         Predict masks given image and prompt embeddings.
@@ -186,17 +208,27 @@ class SemSegHead(nn.Module):
 
         # Upscale mask embeddings and predict masks using the mask tokens
         src = src.transpose(1, 2).view(b, c, h, w)
+
+        self.dequant(src)
         upscaled_embedding = self.output_upscaling(src)
+        self.quant(src)
+
         hyper_in_list: List[torch.Tensor] = []
         for i in range(self.class_num):
-            hyper_in_list.append(self.output_hypernetworks_mlps[i](mask_tokens_out[:, mask_scale, :]))
+            hyper_in_list.append(
+                self.output_hypernetworks_mlps[i](mask_tokens_out[:, mask_scale, :])
+            )
         hyper_in = torch.stack(hyper_in_list, dim=1)
 
         b, c, h, w = upscaled_embedding.shape
-        masks = (hyper_in @ upscaled_embedding.view(b, c, h * w)).view(b, -1, h, w)  # B N H W, N is num of category
+        masks = (hyper_in @ upscaled_embedding.view(b, c, h * w)).view(
+            b, -1, h, w
+        )  # B N H W, N is num of category
 
         # Generate mask quality predictions
-        iou_pred = self.iou_prediction_head(iou_token_out)  # B N H W, N is num of category
+        iou_pred = self.iou_prediction_head(
+            iou_token_out
+        )  # B N H W, N is num of category
 
         return masks, iou_pred
 
@@ -205,12 +237,12 @@ class SemSegHead(nn.Module):
 # https://github.com/facebookresearch/MaskFormer/blob/main/mask_former/modeling/transformer/transformer_predictor.py # noqa
 class MLP(nn.Module):
     def __init__(
-            self,
-            input_dim: int,
-            hidden_dim: int,
-            output_dim: int,
-            num_layers: int,
-            sigmoid_output: bool = False,
+        self,
+        input_dim: int,
+        hidden_dim: int,
+        output_dim: int,
+        num_layers: int,
+        sigmoid_output: bool = False,
     ) -> None:
         super().__init__()
         self.num_layers = num_layers

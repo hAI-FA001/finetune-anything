@@ -2,46 +2,54 @@
 import torch
 from .extend_sam import BaseExtendSam, SemanticSam
 from .runner import BaseRunner, SemRunner
+
 # from .optimizer import BaseOptimizer
 from .scheduler import WarmupMultiStepLR
 from .utils import get_opt_pamams
 
 AVAI_SCH = ["single_step", "multi_step", "warmup_multi_step", "cosine", "linear"]
-AVAI_MODEL = {'base_sam': BaseExtendSam, 'sem_sam': SemanticSam}
+AVAI_MODEL = {"base_sam": BaseExtendSam, "sem_sam": SemanticSam}
 # AVAI_OPT = {'base_opt': BaseOptimizer, 'sgd': torch.optim.SGD, 'adam': torch.optim.Adam}
-AVAI_OPT = {'sgd': torch.optim.SGD, 'adam': torch.optim.Adam, 'adamw': torch.optim.AdamW}
-AVAI_RUNNER = {'base_runner': BaseRunner, 'sem_runner': SemRunner}
+AVAI_OPT = {
+    "sgd": torch.optim.SGD,
+    "adam": torch.optim.Adam,
+    "adamw": torch.optim.AdamW,
+}
+AVAI_RUNNER = {"base_runner": BaseRunner, "sem_runner": SemRunner}
 
 
-def get_model(model_name, **kwargs):
+def get_model(model_name, haveGPU=True, **kwargs):
     if model_name not in AVAI_MODEL:
-        print('not supported model name, please implement it first.')
-    return AVAI_MODEL[model_name](**kwargs).cuda()
+        print("not supported model name, please implement it first.")
+    return (
+        AVAI_MODEL[model_name](**kwargs).cuda()
+        if haveGPU
+        else AVAI_MODEL[model_name](**kwargs)
+    )
 
 
 def get_optimizer(opt_name, **kwargs):
     if opt_name not in AVAI_OPT:
-        print('not supported optimizer name, please implement it first.')
+        print("not supported optimizer name, please implement it first.")
     return AVAI_OPT[opt_name](**{k: v for k, v in kwargs.items() if v is not None})
 
 
 def get_runner(runner_name):
     if runner_name not in AVAI_RUNNER:
-        print('not supported runner name, please implement it first.')
+        print("not supported runner name, please implement it first.")
     return AVAI_RUNNER[runner_name]
 
 
 def get_scheduler(
-        optimizer,
-        lr_scheduler="single_step",
-        stepsize=1,
-        gamma=0.1,
-        warmup_factor=0.01,
-        warmup_steps=10,
-        max_epoch=1,
-        n_epochs_init=50,
-        n_epochs_decay=50,
-
+    optimizer,
+    lr_scheduler="single_step",
+    stepsize=1,
+    gamma=0.1,
+    warmup_factor=0.01,
+    warmup_steps=10,
+    max_epoch=1,
+    n_epochs_init=50,
+    n_epochs_decay=50,
 ):
     """A function wrapper for building a learning rate scheduler.
     Args:
@@ -116,12 +124,11 @@ def get_scheduler(
         )
 
     elif lr_scheduler == "linear":
+
         def lambda_rule(epoch):
             lr_l = 1.0 - max(0, epoch - n_epochs_init) / float(n_epochs_decay + 1)
             return lr_l
 
-        scheduler = torch.optim.lr_scheduler.LambdaLR(
-            optimizer, lr_lambda=lambda_rule
-        )
+        scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=lambda_rule)
 
     return scheduler

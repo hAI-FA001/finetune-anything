@@ -6,26 +6,29 @@
 
 import torch
 from torch import nn
-from torch.nn import functional as F
 
-from typing import List, Tuple, Type
+from typing import Tuple, Type
 from .segment_anything_ori.modeling.common import LayerNorm2d
 
-'''
+from torch.quantization import QuantStub, DeQuantStub
+from torch.quantization.qconfig import float_qparams_weight_only_qconfig
+
+
+"""
 This file save the mask_decoder's neck class, 
 which is the former part of original mask decoder of SAM. 
 Then the mask_decoder_heads can be used with the neck.
-'''
+"""
 
 
 class MaskDecoderNeck(nn.Module):
     def __init__(
-            self,
-            *,
-            transformer_dim: int,
-            transformer: nn.Module,
-            num_multimask_outputs: int = 3,
-            activation: Type[nn.Module] = nn.GELU,
+        self,
+        *,
+        transformer_dim: int,
+        transformer: nn.Module,
+        num_multimask_outputs: int = 3,
+        activation: Type[nn.Module] = nn.GELU,
     ) -> None:
         """
         Predicts masks given an image and prompt embeddings, using a
@@ -50,20 +53,31 @@ class MaskDecoderNeck(nn.Module):
         self.mask_tokens = nn.Embedding(self.num_mask_tokens, transformer_dim)
 
         self.output_upscaling = nn.Sequential(
-            nn.ConvTranspose2d(transformer_dim, transformer_dim // 4, kernel_size=2, stride=2),
+            nn.ConvTranspose2d(
+                transformer_dim, transformer_dim // 4, kernel_size=2, stride=2
+            ),
             LayerNorm2d(transformer_dim // 4),
             activation(),
-            nn.ConvTranspose2d(transformer_dim // 4, transformer_dim // 8, kernel_size=2, stride=2),
+            nn.ConvTranspose2d(
+                transformer_dim // 4, transformer_dim // 8, kernel_size=2, stride=2
+            ),
             activation(),
         )
 
+        self.quant = QuantStub()
+        self.dequant = DeQuantStub()
+        self.output_upscaling.qconfig = None
+
+        self.iou_token.qconfig = float_qparams_weight_only_qconfig
+        self.mask_tokens.qconfig = float_qparams_weight_only_qconfig
+
     def forward(
-            self,
-            image_embeddings: torch.Tensor,
-            image_pe: torch.Tensor,
-            sparse_prompt_embeddings: torch.Tensor,
-            dense_prompt_embeddings: torch.Tensor,
-            multimask_output: bool,
+        self,
+        image_embeddings: torch.Tensor,
+        image_pe: torch.Tensor,
+        sparse_prompt_embeddings: torch.Tensor,
+        dense_prompt_embeddings: torch.Tensor,
+        multimask_output: bool,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """
         Predict masks given image and prompt embeddings.
@@ -82,8 +96,12 @@ class MaskDecoderNeck(nn.Module):
           torch.Tensor: Tokens of mask prediction
         """
         # Concatenate output tokens
-        output_tokens = torch.cat([self.iou_token.weight, self.mask_tokens.weight], dim=0)
-        output_tokens = output_tokens.unsqueeze(0).expand(sparse_prompt_embeddings.size(0), -1, -1)
+        output_tokens = torch.cat(
+            [self.iou_token.weight, self.mask_tokens.weight], dim=0
+        )
+        output_tokens = output_tokens.unsqueeze(0).expand(
+            sparse_prompt_embeddings.size(0), -1, -1
+        )
         tokens = torch.cat((output_tokens, sparse_prompt_embeddings), dim=1)
 
         # Expand per-image data in batch direction to be per-mask
@@ -94,6 +112,6 @@ class MaskDecoderNeck(nn.Module):
         # Run the transformer
         hs, src = self.transformer(src, pos_src, tokens)
         iou_token_out = hs[:, 0, :]
-        mask_tokens_out = hs[:, 1: (1 + self.num_mask_tokens), :]
+        mask_tokens_out = hs[:, 1 : (1 + self.num_mask_tokens), :]
 
         return src, iou_token_out, mask_tokens_out, src_shape
